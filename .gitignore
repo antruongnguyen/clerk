@@ -1,0 +1,15 @@
+# Build artifacts
+/target/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Clerk runtime data (user data lives in ~/.clerk/, not in the repo)
+
+# Override global gitignore to track CLAUDE.md in this repo
+!CLAUDE.md
