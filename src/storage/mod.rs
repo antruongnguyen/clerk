@@ -1,5 +1,6 @@
 pub mod index;
 pub mod markdown;
+pub mod split;
 
 use std::path::PathBuf;
 
@@ -7,7 +8,7 @@ use anyhow::{Result, bail};
 use chrono::Utc;
 
 use crate::config::Config;
-use crate::models::{Item, ItemType};
+use crate::models::{Document, Item, ItemMeta, ItemType};
 use index::{Index, IndexEntry};
 
 /// Manages reading, writing, and indexing items on disk.
@@ -22,7 +23,7 @@ impl Storage {
     pub fn new(config: &Config) -> Result<Self> {
         let data_dir = &config.data_dir;
 
-        for subdir in &["notes", "todos", "documents"] {
+        for subdir in &["notes", "todos", "documents", "tmp"] {
             let dir = data_dir.join(subdir);
             std::fs::create_dir_all(&dir)?;
         }
@@ -39,6 +40,11 @@ impl Storage {
     /// Return a reference to the in-memory index.
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    /// Return the path to the temporary download directory.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.data_dir.join("tmp")
     }
 
     /// Create a new item, write it to disk, and add it to the index.
@@ -61,6 +67,7 @@ impl Storage {
             item_type: meta.item_type.clone(),
             tags: meta.tags.clone(),
             category: meta.category.clone(),
+            source_url: meta.source_url.clone(),
             file_path,
             created: meta.created,
             updated: meta.updated,
@@ -105,6 +112,7 @@ impl Storage {
             item_type: meta.item_type.clone(),
             tags: meta.tags.clone(),
             category: meta.category.clone(),
+            source_url: meta.source_url.clone(),
             file_path,
             created: meta.created,
             updated: meta.updated,
@@ -146,6 +154,80 @@ impl Storage {
         }
         Ok(())
     }
+
+    /// Create a document, automatically splitting into multiple parts if content exceeds
+    /// the maximum length. Returns all created parts.
+    pub fn create_document_split(
+        &mut self,
+        title: String,
+        content: String,
+        summary: Option<String>,
+        tags: Vec<String>,
+        category: Option<String>,
+        source_url: Option<String>,
+    ) -> Result<Vec<Item>> {
+        let chunks = split::split_content(&content, self.max_content_length);
+        let total = chunks.len();
+
+        if total == 1 {
+            let mut meta = ItemMeta::new(title, ItemType::Document);
+            meta.tags = tags;
+            meta.category = category;
+            meta.source_url = source_url;
+
+            let item = Item::Document(Document {
+                meta,
+                content: chunks.into_iter().next().unwrap(),
+                summary,
+            });
+            let created = self.create_item(item)?;
+            return Ok(vec![created]);
+        }
+
+        tracing::info!(total, title = %title, "splitting document into multiple parts");
+
+        let mut created_items = Vec::with_capacity(total);
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            let part_num = i + 1;
+            let part_title = format!("{title} (Part {part_num} of {total})");
+            let part_summary = if part_num == 1 {
+                summary.clone()
+            } else {
+                Some(format!("Part {part_num} of {total}. Continuation of {title}"))
+            };
+
+            let mut meta = ItemMeta::new(part_title, ItemType::Document);
+            meta.tags = tags.clone();
+            meta.category = category.clone();
+            meta.source_url = source_url.clone();
+
+            let item = Item::Document(Document {
+                meta,
+                content: chunk,
+                summary: part_summary,
+            });
+
+            match self.create_item(item) {
+                Ok(created) => created_items.push(created),
+                Err(e) => {
+                    tracing::error!(
+                        part = part_num,
+                        total,
+                        error = %e,
+                        "failed to create part, {} parts already created",
+                        created_items.len()
+                    );
+                    bail!(
+                        "failed to create part {part_num} of {total}: {e}. \
+                         {} parts were created before the failure.",
+                        created_items.len()
+                    );
+                }
+            }
+        }
+
+        Ok(created_items)
+    }
 }
 
 fn type_subdir(item_type: &ItemType) -> &'static str {
@@ -167,6 +249,7 @@ mod tests {
             max_content_length: 10_000,
             http_bind: None,
             log_level: None,
+            download_timeout_secs: 30,
         }
     }
 
@@ -314,10 +397,12 @@ mod tests {
     fn test_directories_created() {
         let dir = tempfile::tempdir().unwrap();
         let config = test_config(dir.path());
-        Storage::new(&config).unwrap();
+        let storage = Storage::new(&config).unwrap();
 
         assert!(dir.path().join("notes").exists());
         assert!(dir.path().join("todos").exists());
         assert!(dir.path().join("documents").exists());
+        assert!(dir.path().join("tmp").exists());
+        assert_eq!(storage.tmp_dir(), dir.path().join("tmp"));
     }
 }

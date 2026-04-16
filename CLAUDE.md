@@ -14,6 +14,7 @@ See `docs/ideas.md` for the full product vision and design details.
 - **Async runtime:** tokio
 - **MCP SDK:** rmcp (features: `server`, `schemars`, `transport-io`, `transport-streamable-http-server`)
 - **HTTP framework:** axum
+- **HTTP client:** reqwest (rustls-tls, for URL downloads)
 - **Serialization:** serde / serde_json
 - **Logging:** tracing + tracing-subscriber (JSON format to stderr)
 - **Error handling:** anyhow (in main), rmcp::ErrorData (in tool handlers)
@@ -47,8 +48,11 @@ cargo install --path .       # Install locally
 ## Design Constraints
 
 - All user data lives in `~/.clerk/` as markdown files — no database.
+- Temporary downloads go to `~/.clerk/tmp/` and are cleaned up after use; this directory is never indexed.
+- Documents exceeding `max_content_length` are automatically split into multiple linked parts at paragraph boundaries.
+- Documents can track a `source_url` for provenance; all parts from a URL share the same source_url.
 - Files must be structured for efficient AI agent consumption (clear naming, consistent frontmatter format).
-- Documents support: date, tags, categories, and optional summary/abstract.
+- Documents support: date, tags, categories, optional summary/abstract, and optional source_url.
 - Related documents are linked through tags/categories forming a navigable knowledge graph.
 
 ## Behavioral Guidelines

@@ -221,6 +221,7 @@ fn meta_from_yaml(map: &serde_yaml::Mapping) -> Result<ItemMeta> {
         .unwrap_or_default();
 
     let category = get_str("category");
+    let source_url = get_str("source_url");
 
     let created = get_str("created")
         .and_then(|s| s.parse::<DateTime<Utc>>().ok())
@@ -236,6 +237,7 @@ fn meta_from_yaml(map: &serde_yaml::Mapping) -> Result<ItemMeta> {
         item_type,
         tags,
         category,
+        source_url,
         created,
         updated,
     })
@@ -288,6 +290,10 @@ fn item_to_yaml_and_body(item: &Item) -> (serde_yaml::Value, String) {
 
     if let Some(ref cat) = meta.category {
         map.insert("category".to_string(), serde_yaml::Value::String(cat.clone()));
+    }
+
+    if let Some(ref url) = meta.source_url {
+        map.insert("source_url".to_string(), serde_yaml::Value::String(url.clone()));
     }
 
     let body = match item {
@@ -458,6 +464,7 @@ mod tests {
             item_type: ItemType::Note,
             tags: vec!["rust".to_string(), "test".to_string()],
             category: Some("engineering".to_string()),
+            source_url: None,
             created: Utc::now(),
             updated: Utc::now(),
         };
@@ -493,6 +500,7 @@ mod tests {
             item_type: ItemType::Todo,
             tags: vec!["bug".to_string()],
             category: None,
+            source_url: None,
             created: Utc::now(),
             updated: Utc::now(),
         };
@@ -529,6 +537,7 @@ mod tests {
             item_type: ItemType::Document,
             tags: vec![],
             category: Some("engineering".to_string()),
+            source_url: None,
             created: Utc::now(),
             updated: Utc::now(),
         };

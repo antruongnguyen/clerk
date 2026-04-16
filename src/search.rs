@@ -190,6 +190,7 @@ mod tests {
             item_type: ItemType::Note,
             tags: vec!["rust".to_string(), "async".to_string()],
             category: Some("engineering".to_string()),
+            source_url: None,
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
         };
@@ -206,6 +207,7 @@ mod tests {
             item_type: ItemType::Todo,
             tags: vec!["bug".to_string(), "auth".to_string()],
             category: Some("engineering".to_string()),
+            source_url: None,
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
         };

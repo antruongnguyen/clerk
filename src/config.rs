@@ -20,6 +20,8 @@ pub struct Config {
     pub http_bind: Option<String>,
     /// Log level filter string.
     pub log_level: Option<String>,
+    /// Timeout in seconds for URL downloads.
+    pub download_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -29,6 +31,7 @@ impl Default for Config {
             max_content_length: 10_000,
             http_bind: None,
             log_level: None,
+            download_timeout_secs: 30,
         }
     }
 }
@@ -90,6 +93,14 @@ impl Config {
         if let Ok(val) = std::env::var("CLERK_LOG_LEVEL") {
             tracing::debug!(CLERK_LOG_LEVEL = %val, "env override");
             self.log_level = Some(val);
+        }
+        if let Ok(val) = std::env::var("CLERK_DOWNLOAD_TIMEOUT_SECS") {
+            if let Ok(v) = val.parse::<u64>() {
+                tracing::debug!(CLERK_DOWNLOAD_TIMEOUT_SECS = %val, "env override");
+                self.download_timeout_secs = v;
+            } else {
+                tracing::warn!(CLERK_DOWNLOAD_TIMEOUT_SECS = %val, "ignoring non-numeric value");
+            }
         }
     }
 

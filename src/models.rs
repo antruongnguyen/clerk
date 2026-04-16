@@ -40,6 +40,8 @@ pub struct ItemMeta {
     pub tags: Vec<String>,
     #[serde(default)]
     pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
     pub created: DateTime<Utc>,
     pub updated: DateTime<Utc>,
 }
@@ -48,11 +50,12 @@ impl ItemMeta {
     pub fn new(title: String, item_type: ItemType) -> Self {
         let now = Utc::now();
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: Uuid::now_v7().to_string(),
             title,
             item_type,
             tags: Vec::new(),
             category: None,
+            source_url: None,
             created: now,
             updated: now,
         }

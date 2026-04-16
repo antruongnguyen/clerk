@@ -1,12 +1,15 @@
 # Clerk MCP Server
 
-A personal information management MCP (Model Context Protocol) server written in Rust. Clerk manages notes, todos, and technical documents as local markdown files in `~/.clerk/`, with a knowledge-graph structure linking items through tags and categories.
+A personal knowledge management MCP (Model Context Protocol) server written in Rust. Clerk manages notes, todos, and technical documents as local markdown files in `~/.clerk/`, with a knowledge-graph structure linking items through tags and categories.
 
 ## Features
 
 - **Notes** -- Create, read, update, and delete general-purpose notes
 - **Todos** -- Track tasks with status (pending/in_progress/done), priority, and due dates
 - **Documents** -- Manage longer-form technical documents with summaries
+- **Auto-split** -- Large documents are automatically split into multiple linked parts
+- **URL Import** -- Create documents from remote text URLs (e.g. `llms.txt`, `llms-full.txt`) with source tracking
+- **Source Tracking** -- Documents track their source URL; find/update/remove all docs from a given URL
 - **Search** -- Full-text search across all items (title, tags, category, content)
 - **Discovery** -- Browse by tags, categories, find related items by shared tags
 - **MCP Resources** -- Browse `clerk://` URIs for structured summaries
@@ -45,6 +48,7 @@ data_dir = "~/.clerk"
 max_content_length = 10000
 http_bind = "127.0.0.1:3456"
 log_level = "info"
+download_timeout_secs = 30
 ```
 
 Environment variable overrides:
@@ -56,6 +60,7 @@ Environment variable overrides:
 | `CLERK_HTTP_BIND` | HTTP bind address |
 | `CLERK_LOG_LEVEL` | Log level filter |
 | `CLERK_CONFIG` | Path to config file |
+| `CLERK_DOWNLOAD_TIMEOUT_SECS` | URL download timeout in seconds |
 
 ## Tools
 
@@ -78,16 +83,17 @@ Environment variable overrides:
 | `delete_todo` | Delete a todo by ID |
 | `set_todo_status` | Change status to pending, in_progress, or done |
 
-### Documents (4 tools)
+### Documents (5 tools)
 
 | Tool | Description |
 |---|---|
-| `create_document` | Create a document with title, content, summary |
+| `create_document` | Create a document (auto-splits if content exceeds size limit) |
+| `create_document_from_url` | Create a document from a URL (auto-splits, tracks source URL) |
 | `read_document` | Read a document by ID |
 | `update_document` | Update a document's fields |
 | `delete_document` | Delete a document by ID |
 
-### Search & Discovery (5 tools)
+### Search & Discovery (6 tools)
 
 | Tool | Description |
 |---|---|
@@ -96,6 +102,7 @@ Environment variable overrides:
 | `list_tags` | All tags with item counts |
 | `list_categories` | All categories with item counts |
 | `find_related` | Items sharing tags with a given item |
+| `find_by_source_url` | Find all documents created from a given URL |
 
 ## MCP Resources
 
@@ -150,6 +157,7 @@ title: "Example Note"
 type: "note"
 tags: ["rust", "mcp"]
 category: "engineering"
+source_url: "https://example.com/llms.txt"   # optional, for URL-imported docs
 created: "2026-04-16T10:00:00Z"
 updated: "2026-04-16T10:00:00Z"
 ---
@@ -165,6 +173,11 @@ cargo clippy                # Lint (must pass with zero warnings)
 cargo fmt                   # Format code
 cargo install --path .      # Install the project
 ```
+
+## Documentation
+
+- [How Clerk Works](docs/how-it-works.md) — architecture, search internals, scaling, knowledge graph, pros and limitations
+- [System Prompt](docs/system-prompt.md) — recommended system prompt for AI agents using Clerk
 
 ## License
 

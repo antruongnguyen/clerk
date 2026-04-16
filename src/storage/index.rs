@@ -14,6 +14,7 @@ pub struct IndexEntry {
     pub item_type: ItemType,
     pub tags: Vec<String>,
     pub category: Option<String>,
+    pub source_url: Option<String>,
     pub file_path: PathBuf,
     pub created: chrono::DateTime<chrono::Utc>,
     pub updated: chrono::DateTime<chrono::Utc>,
@@ -28,6 +29,8 @@ pub struct Index {
     tags_index: HashMap<String, HashSet<String>>,
     /// Category -> set of item IDs in that category.
     categories_index: HashMap<String, HashSet<String>>,
+    /// Source URL -> set of item IDs created from that URL.
+    source_url_index: HashMap<String, HashSet<String>>,
 }
 
 impl Index {
@@ -37,6 +40,7 @@ impl Index {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         let subdirs = ["notes", "todos", "documents"];
@@ -60,6 +64,7 @@ impl Index {
                                 item_type: meta.item_type.clone(),
                                 tags: meta.tags.clone(),
                                 category: meta.category.clone(),
+                                source_url: meta.source_url.clone(),
                                 file_path: path.clone(),
                                 created: meta.created,
                                 updated: meta.updated,
@@ -96,6 +101,13 @@ impl Index {
                 .insert(id.clone());
         }
 
+        if let Some(ref url) = entry.source_url {
+            self.source_url_index
+                .entry(url.clone())
+                .or_default()
+                .insert(id.clone());
+        }
+
         self.items.insert(id, entry);
     }
 
@@ -118,6 +130,15 @@ impl Index {
             set.remove(id);
             if set.is_empty() {
                 self.categories_index.remove(cat);
+            }
+        }
+
+        if let Some(ref url) = entry.source_url
+            && let Some(set) = self.source_url_index.get_mut(url)
+        {
+            set.remove(id);
+            if set.is_empty() {
+                self.source_url_index.remove(url);
             }
         }
 
@@ -151,6 +172,18 @@ impl Index {
     pub fn find_by_category(&self, category: &str) -> Vec<&IndexEntry> {
         self.categories_index
             .get(category)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| self.items.get(id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Find all entries created from a given source URL.
+    pub fn find_by_source_url(&self, url: &str) -> Vec<&IndexEntry> {
+        self.source_url_index
+            .get(url)
             .map(|ids| {
                 ids.iter()
                     .filter_map(|id| self.items.get(id))
@@ -248,6 +281,7 @@ mod tests {
             item_type: ItemType::Note,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             category: category.map(String::from),
+            source_url: None,
             file_path: PathBuf::from(format!("notes/{id}.md")),
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
@@ -260,6 +294,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         let entry = make_note("n1", "First Note", &["rust", "test"], Some("engineering"));
@@ -275,6 +310,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         let entry = make_note("n1", "First", &["rust"], Some("eng"));
@@ -293,6 +329,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "A", &["rust", "test"], None));
@@ -310,6 +347,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "A", &[], Some("work")));
@@ -327,6 +365,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "A", &[], None));
@@ -336,6 +375,7 @@ mod tests {
             item_type: ItemType::Document,
             tags: vec![],
             category: None,
+            source_url: None,
             file_path: PathBuf::from("documents/d1.md"),
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
@@ -352,6 +392,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "A", &["rust", "test"], None));
@@ -370,6 +411,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "A", &[], Some("work")));
@@ -388,6 +430,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "A", &["rust", "test", "async"], None));
@@ -415,6 +458,7 @@ mod tests {
             item_type: ItemType::Note,
             tags: vec!["tag1".to_string()],
             category: Some("cat1".to_string()),
+            source_url: None,
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
         };
@@ -434,6 +478,7 @@ mod tests {
             item_type: ItemType::Document,
             tags: vec!["tag1".to_string(), "tag2".to_string()],
             category: Some("cat1".to_string()),
+            source_url: None,
             created: chrono::Utc::now(),
             updated: chrono::Utc::now(),
         };
@@ -460,6 +505,7 @@ mod tests {
             items: HashMap::new(),
             tags_index: HashMap::new(),
             categories_index: HashMap::new(),
+            source_url_index: HashMap::new(),
         };
 
         index.add(make_note("n1", "Old Title", &["old-tag"], Some("old-cat")));

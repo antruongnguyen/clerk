@@ -1,8 +1,8 @@
 [package]
 name = "clerk-mcp"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
-description = "A personal information management MCP server for notes, todos, and documents"
+description = "Personal knowledge management MCP server — notes, todos, and technical documents as local markdown files"
 license = "MIT"
 readme = "README.md"
 
@@ -18,9 +18,10 @@ dirs = "6"
 anyhow = "1"
 toml = "1.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde_yaml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

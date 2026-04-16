@@ -127,6 +127,8 @@ pub struct CreateDocumentRequest {
     pub tags: Vec<String>,
     #[schemars(description = "Optional category name")]
     pub category: Option<String>,
+    #[schemars(description = "Optional source URL this content was retrieved from")]
+    pub source_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -155,6 +157,23 @@ pub struct UpdateDocumentRequest {
 pub struct DeleteDocumentRequest {
     #[schemars(description = "ID of the document to delete")]
     pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateDocumentFromUrlRequest {
+    #[schemars(
+        description = "URL to download text content from (e.g., llms.txt, llms-full.txt, or any plain text URL)"
+    )]
+    pub url: String,
+    #[schemars(description = "Title of the document")]
+    pub title: String,
+    #[schemars(description = "Optional short summary/abstract")]
+    pub summary: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Tags for categorization")]
+    pub tags: Vec<String>,
+    #[schemars(description = "Optional category name")]
+    pub category: Option<String>,
 }
 
 // ── Search/Discovery request schemas ─────────────────────────────────────
@@ -197,10 +216,17 @@ pub struct FindRelatedRequest {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindBySourceUrlRequest {
+    #[schemars(description = "Source URL to find all documents created from")]
+    pub source_url: String,
+}
+
 // ── Server ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct ClerkServer {
+    config: Config,
     storage: Arc<RwLock<Storage>>,
     #[allow(dead_code)] // Read by #[tool_handler] macro expansion
     tool_router: ToolRouter<ClerkServer>,
@@ -211,6 +237,7 @@ impl ClerkServer {
         let storage = Storage::new(&config)
             .expect("failed to initialize storage");
         Self {
+            config: config.clone(),
             storage: Arc::new(RwLock::new(storage)),
             tool_router: Self::tool_router(),
         }
@@ -223,7 +250,10 @@ impl ClerkServer {
 impl ClerkServer {
     // ── Notes ─────────────────────────────────────────────────────────
 
-    #[tool(description = "Create a new note with a title and markdown content")]
+    #[tool(description = "Create a new note with a title and markdown content. \
+        Provide up to 20 relevant tags for knowledge graph linking. \
+        Provide at least a category (e.g. work, personal, engineering, research). \
+        Check list_tags first to reuse existing tags.")]
     async fn create_note(
         &self,
         Parameters(req): Parameters<CreateNoteRequest>,
@@ -259,7 +289,10 @@ impl ClerkServer {
         }
     }
 
-    #[tool(description = "Update an existing note's title, content, tags, or category")]
+    #[tool(description = "Update an existing note's title, content, tags, or category. \
+        When updating content, review and update tags to match the new content. \
+        Provide up to 20 tags. \
+        Maintain existing relevant tags and add new ones to preserve knowledge graph relationships.")]
     async fn update_note(
         &self,
         Parameters(req): Parameters<UpdateNoteRequest>,
@@ -440,24 +473,63 @@ impl ClerkServer {
 
     // ── Documents ─────────────────────────────────────────────────────
 
-    #[tool(description = "Create a new technical document with a title, content, and optional summary")]
+    #[tool(description = "Create a new technical document with a title, content, and optional summary. \
+        Content exceeding the size limit is automatically split into multiple linked parts. \
+        Provide a summary of up to 5 sentences describing the document's purpose and key points. \
+        Provide up to 50 relevant tags for knowledge graph linking. \
+        Provide at least a category. Check list_tags first to reuse existing tags.")]
     async fn create_document(
         &self,
         Parameters(req): Parameters<CreateDocumentRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let mut meta = ItemMeta::new(req.title, ItemType::Document);
-        meta.tags = req.tags;
-        meta.category = req.category;
+        let mut storage = self.storage.write().await;
+        match storage.create_document_split(
+            req.title,
+            req.content,
+            req.summary,
+            req.tags,
+            req.category,
+            req.source_url,
+        ) {
+            Ok(items) if items.len() == 1 => ok_json(&items[0]),
+            Ok(items) => ok_split_json(&items),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
 
-        let item = Item::Document(Document {
-            meta,
-            content: req.content,
-            summary: req.summary,
-        });
+    #[tool(description = "Create a new document by downloading text content from a URL. \
+        Content exceeding the size limit is automatically split into multiple linked parts. \
+        The source URL is stored for provenance tracking. \
+        Suitable for plain text URLs like llms.txt or llms-full.txt. \
+        Provide a summary of up to 5 sentences. \
+        Provide up to 50 relevant tags. Provide at least a category.")]
+    async fn create_document_from_url(
+        &self,
+        Parameters(req): Parameters<CreateDocumentFromUrlRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let tmp_dir = {
+            let storage = self.storage.read().await;
+            storage.tmp_dir()
+        };
+
+        let timeout_secs = self.config.download_timeout_secs;
+        let content = download_url_content(&req.url, &tmp_dir, timeout_secs)
+            .await
+            .map_err(|e| {
+                McpError::internal_error(format!("failed to download URL: {e}"), None)
+            })?;
 
         let mut storage = self.storage.write().await;
-        match storage.create_item(item) {
-            Ok(created) => ok_json(&created),
+        match storage.create_document_split(
+            req.title,
+            content,
+            req.summary,
+            req.tags,
+            req.category,
+            Some(req.url),
+        ) {
+            Ok(items) if items.len() == 1 => ok_json(&items[0]),
+            Ok(items) => ok_split_json(&items),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
     }
@@ -477,7 +549,10 @@ impl ClerkServer {
         }
     }
 
-    #[tool(description = "Update an existing document's title, content, summary, tags, or category")]
+    #[tool(description = "Update an existing document's title, content, summary, tags, or category. \
+        When updating content, also update the summary (up to 5 sentences) to reflect the changes. \
+        Provide up to 50 tags. \
+        Maintain existing relevant tags and add new ones to preserve knowledge graph relationships.")]
     async fn update_document(
         &self,
         Parameters(req): Parameters<UpdateDocumentRequest>,
@@ -676,6 +751,31 @@ impl ClerkServer {
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    #[tool(description = "Find all documents created from a given source URL. \
+        Use this to discover all parts of a document imported from a URL, \
+        enabling bulk update or removal of content from a specific source.")]
+    async fn find_by_source_url(
+        &self,
+        Parameters(req): Parameters<FindBySourceUrlRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let storage = self.storage.read().await;
+        let items = storage.index().find_by_source_url(&req.source_url);
+
+        let entries: Vec<serde_json::Value> = items
+            .iter()
+            .map(|e| index_entry_to_json(e))
+            .collect();
+
+        let json = serde_json::to_string_pretty(&serde_json::json!({
+            "source_url": req.source_url,
+            "count": entries.len(),
+            "documents": entries,
+        }))
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 #[tool_handler]
@@ -686,7 +786,8 @@ impl ServerHandler for ClerkServer {
         impl_info.title = Some("Clerk MCP Server".to_string());
         impl_info.version = env!("CARGO_PKG_VERSION").to_string();
         impl_info.description =
-            Some("A personal information management MCP server for notes, todos, and documents".to_string());
+            Some("Personal knowledge management — notes, todos, and technical documents stored as \
+                  local markdown files with tag-based linking and full-text search".to_string());
 
         let mut info = ServerInfo::default();
         info.capabilities = ServerCapabilities::builder()
@@ -696,10 +797,40 @@ impl ServerHandler for ClerkServer {
             .build();
         info.server_info = impl_info;
         info.instructions = Some(
-            "Clerk MCP Server — manage personal notes, todos, and technical documents. \
-             Data is stored as local markdown files in ~/.clerk/. \
-             Use tools for CRUD operations and search. \
-             Browse resources via clerk:// URIs for summaries and listings."
+            "Clerk is a personal knowledge management MCP server. All data lives as markdown files \
+             in ~/.clerk/ organized into notes, todos, and documents.\n\n\
+             ITEM TYPES:\n\
+             - Notes: general-purpose information and reference material (title, content, tags, category).\n\
+             - Todos: actionable tasks with status (pending/in_progress/done), priority (low/medium/high), \
+               and optional due date (YYYY-MM-DD).\n\
+             - Documents: longer-form technical content with an optional summary field. \
+               Documents exceeding the size limit are automatically split into multiple linked parts.\n\n\
+             TOOLS:\n\
+             - CRUD: create/read/update/delete for each type (create_note, read_note, etc.).\n\
+             - create_document / create_document_from_url: create documents with auto-split \
+               for large content. Content from URLs is tracked via source_url for provenance.\n\
+             - find_by_source_url: find all documents created from a given URL (for bulk update/removal).\n\
+             - set_todo_status: transition a todo between pending, in_progress, and done.\n\
+             - search: full-text search across all items; filter by type, tags, and category.\n\
+             - list_items: paginated listing with filters (type, tags, category, status); \
+               default limit 20.\n\
+             - list_tags / list_categories: discover existing tags and categories with counts.\n\
+             - find_related: given an item ID, find items sharing its tags (knowledge graph traversal).\n\n\
+             RESOURCES (clerk:// URIs):\n\
+             - clerk://items, clerk://notes, clerk://todos, clerk://documents — summary listings.\n\
+             - clerk://tags — tag cloud with counts.\n\
+             - clerk://tags/{tag} — items with a specific tag.\n\
+             - clerk://categories/{category} — items in a specific category.\n\
+             - clerk://items/{id} — full content of a specific item.\n\n\
+             BEST PRACTICES:\n\
+             - Search before creating to avoid duplicates.\n\
+             - Reuse existing tags (check list_tags) rather than inventing new ones.\n\
+             - Provide up to 20 tags for notes, up to 50 tags for documents. Provide at least a category.\n\
+             - Provide summaries of up to 5 sentences for documents.\n\
+             - When updating content, review and update tags/summary to maintain relationships.\n\
+             - Content exceeding ~10,000 chars is auto-split into parts; no manual splitting needed.\n\
+             - When cross-referencing other Clerk items in content, use clerk://items/{id} as the link URL. \
+               Never use placeholder text like (link). Search for the target item first to get its ID."
                 .to_string(),
         );
         info
@@ -846,6 +977,50 @@ fn ok_json(value: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(json)]))
 }
 
+fn ok_split_json(items: &[Item]) -> Result<CallToolResult, McpError> {
+    let json = serde_json::to_string_pretty(&serde_json::json!({
+        "total_parts": items.len(),
+        "message": format!("Content was split into {} parts due to size limit", items.len()),
+        "parts": items,
+    }))
+    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![Content::text(json)]))
+}
+
+async fn download_url_content(
+    url: &str,
+    tmp_dir: &std::path::Path,
+    timeout_secs: u64,
+) -> anyhow::Result<String> {
+    tracing::info!(%url, "downloading URL content");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()?;
+
+    let response = client.get(url).send().await?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("HTTP {} for URL: {}", response.status(), url);
+    }
+
+    let file_name = format!("download-{}.tmp", uuid::Uuid::now_v7());
+    let tmp_path = tmp_dir.join(&file_name);
+
+    let bytes = response.bytes().await?;
+    tokio::fs::write(&tmp_path, &bytes).await?;
+
+    let content = tokio::fs::read_to_string(&tmp_path).await;
+
+    // Clean up temp file regardless of read result.
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+
+    let content = content?;
+
+    tracing::info!(%url, bytes = content.len(), "URL content downloaded");
+    Ok(content)
+}
+
 fn parse_priority(s: Option<&str>) -> Priority {
     match s {
         Some("low") => Priority::Low,
@@ -877,7 +1052,7 @@ fn parse_item_type(s: &str) -> Option<ItemType> {
 }
 
 fn index_entry_to_json(entry: &crate::storage::index::IndexEntry) -> serde_json::Value {
-    serde_json::json!({
+    let mut obj = serde_json::json!({
         "id": entry.id,
         "title": entry.title,
         "type": match entry.item_type {
@@ -889,7 +1064,11 @@ fn index_entry_to_json(entry: &crate::storage::index::IndexEntry) -> serde_json:
         "category": entry.category,
         "created": entry.created.to_rfc3339(),
         "updated": entry.updated.to_rfc3339(),
-    })
+    });
+    if let Some(ref url) = entry.source_url {
+        obj["source_url"] = serde_json::Value::String(url.clone());
+    }
+    obj
 }
 
 // ── Resource rendering helpers ───────────────────────────────────────────
@@ -1078,9 +1257,12 @@ fn render_item_full(storage: &Storage, id: &str) -> Result<String, McpError> {
         format!("**ID:** {}", meta.id),
         format!("**Tags:** {tags}"),
         format!("**Category:** {category}"),
-        format!("**Created:** {}", meta.created.to_rfc3339()),
-        format!("**Updated:** {}", meta.updated.to_rfc3339()),
     ];
+    if let Some(ref url) = meta.source_url {
+        lines.push(format!("**Source URL:** {url}"));
+    }
+    lines.push(format!("**Created:** {}", meta.created.to_rfc3339()));
+    lines.push(format!("**Updated:** {}", meta.updated.to_rfc3339()));
 
     match &item {
         Item::Note(n) => {
