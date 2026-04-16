@@ -492,7 +492,7 @@ impl ClerkServer {
             req.source_url,
         ) {
             Ok(items) if items.len() == 1 => ok_json(&items[0]),
-            Ok(items) => ok_split_json(&items),
+            Ok(items) => ok_split_json(&items, 0),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
     }
@@ -500,6 +500,7 @@ impl ClerkServer {
     #[tool(description = "Create a new document by downloading text content from a URL. \
         Content exceeding the size limit is automatically split into multiple linked parts. \
         The source URL is stored for provenance tracking. \
+        If documents from the same URL already exist, they are removed before creating new ones. \
         Suitable for plain text URLs like llms.txt or llms-full.txt. \
         Provide a summary of up to 5 sentences. \
         Provide up to 50 relevant tags. Provide at least a category.")]
@@ -520,6 +521,13 @@ impl ClerkServer {
             })?;
 
         let mut storage = self.storage.write().await;
+
+        // Remove existing documents from this URL before creating new ones.
+        let deleted = storage.delete_items_by_source_url(&req.url)
+            .map_err(|e| McpError::internal_error(
+                format!("failed to remove existing documents for URL: {e}"), None,
+            ))?;
+
         match storage.create_document_split(
             req.title,
             content,
@@ -528,8 +536,14 @@ impl ClerkServer {
             req.category,
             Some(req.url),
         ) {
-            Ok(items) if items.len() == 1 => ok_json(&items[0]),
-            Ok(items) => ok_split_json(&items),
+            Ok(items) if items.len() == 1 => {
+                if deleted > 0 {
+                    ok_json_with_note(&items[0], &format!("Replaced {deleted} existing document(s) from this URL"))
+                } else {
+                    ok_json(&items[0])
+                }
+            }
+            Ok(items) => ok_split_json(&items, deleted),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
     }
@@ -977,13 +991,28 @@ fn ok_json(value: &impl serde::Serialize) -> Result<CallToolResult, McpError> {
     Ok(CallToolResult::success(vec![Content::text(json)]))
 }
 
-fn ok_split_json(items: &[Item]) -> Result<CallToolResult, McpError> {
-    let json = serde_json::to_string_pretty(&serde_json::json!({
+fn ok_split_json(items: &[Item], deleted: usize) -> Result<CallToolResult, McpError> {
+    let mut obj = serde_json::json!({
         "total_parts": items.len(),
-        "message": format!("Content was split into {} parts due to size limit", items.len()),
+        "message": format!("Content was split into {} parts", items.len()),
         "parts": items,
-    }))
-    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    });
+    if deleted > 0 {
+        obj["replaced"] = serde_json::json!(format!("Removed {deleted} existing document(s) from this URL"));
+    }
+    let json = serde_json::to_string_pretty(&obj)
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![Content::text(json)]))
+}
+
+fn ok_json_with_note(value: &impl serde::Serialize, note: &str) -> Result<CallToolResult, McpError> {
+    let mut obj = serde_json::to_value(value)
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    if let Some(map) = obj.as_object_mut() {
+        map.insert("_note".to_string(), serde_json::Value::String(note.to_string()));
+    }
+    let json = serde_json::to_string_pretty(&obj)
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
     Ok(CallToolResult::success(vec![Content::text(json)]))
 }
 

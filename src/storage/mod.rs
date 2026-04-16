@@ -139,6 +139,26 @@ impl Storage {
         Ok(())
     }
 
+    /// Delete all items that share a given source URL. Returns the count of deleted items.
+    pub fn delete_items_by_source_url(&mut self, url: &str) -> Result<usize> {
+        let ids: Vec<String> = self
+            .index
+            .find_by_source_url(url)
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+
+        let count = ids.len();
+        for id in &ids {
+            self.delete_item(id)?;
+        }
+
+        if count > 0 {
+            tracing::info!(url, count, "deleted existing items for source URL");
+        }
+        Ok(count)
+    }
+
     fn validate_content_length(&self, item: &Item) -> Result<()> {
         let content_len = match item {
             Item::Note(n) => n.content.len(),
@@ -156,7 +176,8 @@ impl Storage {
     }
 
     /// Create a document, automatically splitting into multiple parts if content exceeds
-    /// the maximum length. Returns all created parts.
+    /// the maximum length. Pre-scans the content to build a heading outline, then splits
+    /// at heading boundaries with breadcrumb metadata per chunk.
     pub fn create_document_split(
         &mut self,
         title: String,
@@ -166,10 +187,12 @@ impl Storage {
         category: Option<String>,
         source_url: Option<String>,
     ) -> Result<Vec<Item>> {
-        let chunks = split::split_content(&content, self.max_content_length);
+        let outline = split::prescan_outline(&content);
+        let chunks = split::split_content_with_outline(&content, self.max_content_length, &outline);
         let total = chunks.len();
 
         if total == 1 {
+            let chunk = chunks.into_iter().next().unwrap();
             let mut meta = ItemMeta::new(title, ItemType::Document);
             meta.tags = tags;
             meta.category = category;
@@ -177,7 +200,7 @@ impl Storage {
 
             let item = Item::Document(Document {
                 meta,
-                content: chunks.into_iter().next().unwrap(),
+                content: chunk.content,
                 summary,
             });
             let created = self.create_item(item)?;
@@ -189,11 +212,34 @@ impl Storage {
         let mut created_items = Vec::with_capacity(total);
         for (i, chunk) in chunks.into_iter().enumerate() {
             let part_num = i + 1;
-            let part_title = format!("{title} (Part {part_num} of {total})");
-            let part_summary = if part_num == 1 {
-                summary.clone()
+
+            // Use the breadcrumb heading path as the part title when available.
+            let part_title = if let Some(ref heading) = chunk.heading {
+                format!("{title} — {heading}")
             } else {
-                Some(format!("Part {part_num} of {total}. Continuation of {title}"))
+                format!("{title} (Part {part_num} of {total})")
+            };
+
+            // Part 1 gets the user-provided summary plus a TOC of all parts.
+            // Subsequent parts get a summary derived from their breadcrumb.
+            let part_summary = if part_num == 1 {
+                let mut s = summary.clone().unwrap_or_default();
+                if !outline.toc.is_empty() {
+                    if !s.is_empty() {
+                        s.push_str("\n\n");
+                    }
+                    s.push_str("## Table of Contents\n\n");
+                    s.push_str(&outline.toc);
+                }
+                Some(s)
+            } else if let Some(ref heading) = chunk.heading {
+                Some(format!(
+                    "Part {part_num} of {total} from \"{title}\". Section: {heading}."
+                ))
+            } else {
+                Some(format!(
+                    "Part {part_num} of {total} from \"{title}\"."
+                ))
             };
 
             let mut meta = ItemMeta::new(part_title, ItemType::Document);
@@ -203,7 +249,7 @@ impl Storage {
 
             let item = Item::Document(Document {
                 meta,
-                content: chunk,
+                content: chunk.content,
                 summary: part_summary,
             });
 
